@@ -543,16 +543,18 @@ FROM pg_replication_slots;
 # archive_mode = on
 # archive_command = 'cp %p /archive/%f'
 ```
-  SELECT application_name, client_addr, state, sync_state, 
-         pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), flush_lsn)) as lag
-  FROM pg_stat_replication;
-"
+
+```sql
+SELECT application_name, client_addr, state, sync_state, 
+        pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), flush_lsn)) as lag
+FROM pg_stat_replication;
+```
 
 # Slave 연결 상태 확인
+```bash
 docker exec postgres-slave psql -U ramos -d ramos-test-db -c "
   SELECT status, sender_host, sender_port, conninfo 
   FROM pg_stat_wal_receiver;
-"
 ```
 
 #### 복제 슬롯 누락 문제 해결
