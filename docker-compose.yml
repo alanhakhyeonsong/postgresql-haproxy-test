@@ -1,7 +1,9 @@
 services:
-  # PostgreSQL Master Database
+  # PostgreSQL Master Database with repmgr
   postgres-master:
-    image: postgres:15
+    build:
+      context: ./docker/postgres/master
+      dockerfile: Dockerfile
     container_name: postgres-master
     environment:
       POSTGRES_DB: ramos-test-db
@@ -9,11 +11,16 @@ services:
       POSTGRES_PASSWORD: ramostest123
       POSTGRES_REPLICATION_USER: replicator
       POSTGRES_REPLICATION_PASSWORD: replicator_password
+      REPMGR_NODE_ID: 1
+      REPMGR_NODE_NAME: postgres-master
+      REPMGR_PRIMARY_HOST: postgres-master
     volumes:
       - postgres_master_data:/var/lib/postgresql/data
+      - postgres_master_repmgr_logs:/var/log/repmgr
       - ./docker/postgres/master/postgresql.conf:/etc/postgresql/postgresql.conf
       - ./docker/postgres/master/pg_hba.conf:/etc/postgresql/pg_hba.conf
-      - ./docker/postgres/init-master.sql:/docker-entrypoint-initdb.d/init-master.sql
+      - ./docker/postgres/init-master.sql:/docker-entrypoint-initdb.d/01-init-master.sql
+      - ./docker/postgres/repmgr-init-master.sh:/docker-entrypoint-initdb.d/99-repmgr-init.sh
     command: |
       postgres 
       -c config_file=/etc/postgresql/postgresql.conf
@@ -29,20 +36,27 @@ services:
       timeout: 5s
       retries: 5
 
-  # PostgreSQL Slave Database - REPLICATION FIXED VERSION
+  # PostgreSQL Slave Database with repmgr
   postgres-slave:
-    image: postgres:15
+    build:
+      context: ./docker/postgres/slave
+      dockerfile: Dockerfile
     container_name: postgres-slave
     environment:
       POSTGRES_USER: ramos
       POSTGRES_PASSWORD: ramostest123
       POSTGRES_DB: ramos-test-db
       PGUSER: ramos
+      REPMGR_NODE_ID: 2
+      REPMGR_NODE_NAME: postgres-slave
+      REPMGR_PRIMARY_HOST: postgres-master
     volumes:
       - postgres_slave_data:/var/lib/postgresql/data
+      - postgres_slave_repmgr_logs:/var/log/repmgr
       - ./docker/postgres/slave/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./docker/postgres/slave/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-      - ./docker/postgres/init-slave.sh:/docker-entrypoint-initdb.d/init-slave.sh:ro
+      - ./docker/postgres/init-slave.sh:/docker-entrypoint-initdb.d/01-init-slave.sh:ro
+      - ./docker/postgres/repmgr-init-slave.sh:/docker-entrypoint-initdb.d/99-repmgr-init.sh:ro
     entrypoint: |
       bash -c "
       # Run the slave initialization script
@@ -167,4 +181,6 @@ networks:
 volumes:
   postgres_master_data:
   postgres_slave_data:
+  postgres_master_repmgr_logs:
+  postgres_slave_repmgr_logs:
   pgadmin_data:
