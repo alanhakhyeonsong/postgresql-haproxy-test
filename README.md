@@ -97,6 +97,32 @@ docker exec postgres-slave psql -U ramos -d ramos-test-db -c "
 - **HAProxy 통계**: http://localhost:8080/stats
 - **PgAdmin 관리**: http://localhost:8081 (admin@example.com / admin123)
 
+#### PgAdmin 서버 등록 정보
+
+**Master 서버 등록:**
+- Name: `PostgreSQL Master`
+- Host: `postgres-master` (Docker 네트워크) 또는 `localhost` (호스트)
+- Port: `5432`
+- Database: `ramos-test-db`
+- Username: `ramos`
+- Password: `ramostest123`
+
+**Slave 서버 등록:**
+- Name: `PostgreSQL Slave`
+- Host: `postgres-slave` (Docker 네트워크) 또는 `localhost` (호스트)
+- Port: `5432` (Docker 네트워크) 또는 `5433` (호스트)
+- Database: `ramos-test-db`
+- Username: `ramos`
+- Password: `ramostest123`
+
+**HAProxy 통합 연결 (권장):**
+- Name: `PostgreSQL via HAProxy`
+- Host: `postgres-haproxy` (Docker 네트워크) 또는 `localhost` (호스트)
+- Port: `3000` (Write) 또는 `3001` (Read)
+- Database: `ramos-test-db`
+- Username: `ramos`
+- Password: `ramostest123`
+
 ## 애플리케이션 연결 방법
 
 ### 로컬 개발 환경 연결
@@ -232,6 +258,46 @@ docker exec postgres-slave psql -U ramos -d ramos-test-db -c "
 "
 ```
 
+#### 복제 슬롯 누락 문제 해결
+Slave에서 "replication slot does not exist" 오류가 발생하는 경우:
+
+```bash
+# 1. Master에서 복제 슬롯 생성
+docker exec postgres-master psql -U ramos -d ramos-test-db -c "
+  SELECT pg_create_physical_replication_slot('slave_slot');
+"
+
+# 2. 복제 슬롯 생성 확인
+docker exec postgres-master psql -U ramos -d ramos-test-db -c "
+  SELECT slot_name, slot_type, active FROM pg_replication_slots;
+"
+
+# 3. Slave 재시작
+docker-compose restart postgres-slave
+
+# 4. 복제 상태 재확인 (약 10초 대기 후)
+sleep 10
+docker exec postgres-master psql -U ramos -d ramos-test-db -c "
+  SELECT application_name, client_addr, state, sync_state FROM pg_stat_replication;
+"
+```
+
+#### 사용자 권한 문제 ("role does not exist" 오류)
+완전한 시스템 재초기화가 필요한 경우:
+
+```bash
+# 1. 모든 컨테이너와 볼륨 삭제 (주의: 모든 데이터 삭제됨)
+docker-compose down -v
+
+# 2. 시스템 재시작
+docker-compose up -d
+
+# 3. Master가 healthy 상태가 될 때까지 대기
+docker-compose ps | grep postgres-master
+
+# 4. 필요시 복제 슬롯 재생성 (위의 복제 슬롯 생성 단계 참조)
+```
+
 ### 2. VIP 할당 상태 확인
 ```bash
 # VIP가 활성화된 Keepalived 확인
@@ -326,6 +392,9 @@ docker-compose ps
 echo -e "\n복제 상태:"
 docker exec postgres-master psql -U ramos -d ramos-test-db -c "SELECT application_name, state FROM pg_stat_replication;"
 
+echo -e "\n복제 슬롯 상태:"
+docker exec postgres-master psql -U ramos -d ramos-test-db -c "SELECT slot_name, slot_type, active FROM pg_replication_slots;"
+
 echo -e "\nVIP 상태:"
 docker exec keepalived-primary ip addr show eth0 | grep 172.20.0.100 && echo "VIP: Primary에 할당됨" || echo "VIP: Backup에 할당됨"
 ```
@@ -341,6 +410,7 @@ docker exec keepalived-primary ip addr show eth0 | grep 172.20.0.100 && echo "VI
 ### 배포 후 검증
 - [ ] 모든 컨테이너 healthy 상태 확인
 - [ ] Master-Slave 복제 동작 확인
+- [ ] 복제 슬롯(`slave_slot`) 생성 및 활성화 확인
 - [ ] VIP 할당 및 Failover 테스트
 - [ ] HAProxy 로드밸런싱 동작 확인
 - [ ] 애플리케이션 연결 테스트
