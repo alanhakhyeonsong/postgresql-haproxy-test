@@ -1,0 +1,170 @@
+services:
+  # PostgreSQL Master Database
+  postgres-master:
+    image: postgres:15
+    container_name: postgres-master
+    environment:
+      POSTGRES_DB: ramos-test-db
+      POSTGRES_USER: ramos
+      POSTGRES_PASSWORD: ramostest123
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replicator_password
+    volumes:
+      - postgres_master_data:/var/lib/postgresql/data
+      - ./docker/postgres/master/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./docker/postgres/master/pg_hba.conf:/etc/postgresql/pg_hba.conf
+      - ./docker/postgres/init-master.sql:/docker-entrypoint-initdb.d/init-master.sql
+    command: |
+      postgres 
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    networks:
+      postgres_network:
+        ipv4_address: 172.20.0.10
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ramos -d ramos-test-db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL Slave Database - REPLICATION FIXED VERSION
+  postgres-slave:
+    image: postgres:15
+    container_name: postgres-slave
+    environment:
+      POSTGRES_USER: ramos
+      POSTGRES_PASSWORD: ramostest123
+      POSTGRES_DB: ramos-test-db
+      PGUSER: ramos
+    volumes:
+      - postgres_slave_data:/var/lib/postgresql/data
+      - ./docker/postgres/slave/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./docker/postgres/slave/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./docker/postgres/init-slave.sh:/docker-entrypoint-initdb.d/init-slave.sh:ro
+    entrypoint: |
+      bash -c "
+      # Run the slave initialization script
+      chmod +x /docker-entrypoint-initdb.d/init-slave.sh
+      /docker-entrypoint-initdb.d/init-slave.sh
+      
+      # Start PostgreSQL with custom config
+      exec docker-entrypoint.sh postgres \
+        -c config_file=/etc/postgresql/postgresql.conf \
+        -c hba_file=/etc/postgresql/pg_hba.conf
+      "
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+    networks:
+      postgres_network:
+        ipv4_address: 172.20.0.11
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ramos -d ramos-test-db"]  # FIXED: Match master user
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s  # FIXED: Increased start period for slave setup
+
+  # HAProxy for Load Balancing and Health Check
+  haproxy:
+    image: haproxy:2.8
+    container_name: postgres-haproxy
+    volumes:
+      - ./docker/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./docker/haproxy/health-check.sh:/usr/local/bin/health-check.sh:ro
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+      postgres-slave:
+        condition: service_healthy
+    networks:
+      postgres_network:
+        ipv4_address: 172.20.0.20
+    ports:
+      - "3000:3000"  # MMM VIP port
+      - "3001:3001"  # Read port
+      - "8080:8080"  # HAProxy stats
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/stats"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Keepalived for VIP management (Primary)
+  keepalived-primary:
+    image: osixia/keepalived:2.0.20
+    container_name: keepalived-primary
+    environment:
+      KEEPALIVED_INTERFACE: eth0
+      KEEPALIVED_VIRTUAL_IPS: 172.20.0.100
+      KEEPALIVED_UNICAST_PEERS: 172.20.0.21,172.20.0.22
+      KEEPALIVED_PRIORITY: 150
+      KEEPALIVED_ROUTER_ID: 51
+    volumes:
+      - ./docker/keepalived/primary/keepalived.conf:/etc/keepalived/keepalived.conf:ro
+      - ./docker/keepalived/check_haproxy.sh:/usr/local/bin/check_haproxy.sh:ro
+    depends_on:
+      - haproxy
+    networks:
+      postgres_network:
+        ipv4_address: 172.20.0.21
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+
+  # Keepalived for VIP management (Backup)
+  keepalived-backup:
+    image: osixia/keepalived:2.0.20
+    container_name: keepalived-backup
+    environment:
+      KEEPALIVED_INTERFACE: eth0
+      KEEPALIVED_VIRTUAL_IPS: 172.20.0.100
+      KEEPALIVED_UNICAST_PEERS: 172.20.0.21,172.20.0.22
+      KEEPALIVED_PRIORITY: 100
+      KEEPALIVED_ROUTER_ID: 52
+    volumes:
+      - ./docker/keepalived/backup/keepalived.conf:/etc/keepalived/keepalived.conf:ro
+      - ./docker/keepalived/check_haproxy.sh:/usr/local/bin/check_haproxy.sh:ro
+    depends_on:
+      - haproxy
+    networks:
+      postgres_network:
+        ipv4_address: 172.20.0.22
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+
+  # PostgreSQL Monitoring and Management
+  pgadmin:
+    image: dpage/pgadmin4:7
+    container_name: postgres-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres-master
+      - postgres-slave
+    networks:
+      postgres_network:
+        ipv4_address: 172.20.0.30
+    ports:
+      - "8081:80"
+
+networks:
+  postgres_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+
+volumes:
+  postgres_master_data:
+  postgres_slave_data:
+  pgadmin_data:
