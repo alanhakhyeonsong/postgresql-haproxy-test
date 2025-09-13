@@ -355,7 +355,7 @@ docker exec postgres-slave su - postgres -c "repmgr -f /etc/repmgr.conf node sta
 ```
 
 ### 2. HAProxy 통계 대시보드
-- **URL**: http://localhost:8404/stats
+- **URL**: http://localhost:8080/stats
 - **인증**: admin / admin123
 - **기능**: 
   - 실시간 백엔드 서버 상태 모니터링
@@ -472,7 +472,7 @@ docker exec postgres-master psql -U postgres -c "SELECT pg_create_physical_repli
 #### 증상: repmgr Failover 후 HAProxy가 새로운 Master를 인식하지 못함
 ```bash
 # HAProxy 상태 확인
-curl -u admin:admin123 http://localhost:8404/stats
+curl -u admin:admin123 http://localhost:8080/stats
 
 # 백엔드 서버 헬스체크 로그 확인
 docker-compose logs haproxy | grep -E "(check|health)"
