@@ -4,7 +4,7 @@
 
 이 프로젝트는 PostgreSQL Master-Slave 복제, HAProxy 로드밸런싱, Keepalived VIP 관리를 다루는 **로컬 학습용** 고가용성 데이터베이스 클러스터다.
 
-> ✅ **자동 Failover 검증 완료 (2026-06-03)**: `docker compose up` 한 번으로 노드가 repmgr 에 자동 등록되고 `repmgrd` 데몬이 상시 기동되어, Master 장애 시 Slave 가 자동 승격되고 HAProxy write 포트(3000)가 새 Primary 로 자동 전환된다. 변경 내역, 구조, 실측 로그는 [`AUTOMATIC-FAILOVER.md`](./AUTOMATIC-FAILOVER.md) 를 참고.
+> ✅ **자동 Failover 검증 완료 (2026-06-03)**: `docker compose up` 한 번으로 노드가 repmgr 에 자동 등록되고 `repmgrd` 데몬이 상시 기동되어, Master 장애 시 Slave 가 자동 승격되고 HAProxy write 포트(3000)가 새 Primary 로 자동 전환된다. 변경 내역, 구조, 실측 로그는 [`docs/AUTOMATIC-FAILOVER.md`](./docs/AUTOMATIC-FAILOVER.md) 를 참고. read/write 분리·VIP·앱 관점·Spring 라우팅은 [`docs/`](./docs) 의 개별 문서 참고.
 >
 > ⚠️ Keepalived VIP(VRRP)는 로컬 Docker(bridge) 환경에서는 실효가 제한적이다. 호스트의 `localhost:3000` 접근은 VIP 가 아니라 HAProxy 컨테이너의 포트 매핑이며, write 고가용성은 HAProxy 의 HTTP 헬스체크로 달성한다.
 
