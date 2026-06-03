@@ -18,8 +18,6 @@ echo "Master 준비 완료!"
 mkdir -p /var/log/repmgr
 chown postgres:postgres /var/log/repmgr
 
-# repmgr 설정 파일 권한 설정
-chown postgres:postgres /etc/repmgr.conf
-chmod 600 /etc/repmgr.conf
+# repmgr.conf 는 read-only volume 마운트이므로 권한 변경하지 않는다 (chown/chmod 시 ro 에러).
 
 echo "=== repmgr Slave 초기화 완료 ==="

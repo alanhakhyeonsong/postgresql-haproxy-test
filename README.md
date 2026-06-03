@@ -2,7 +2,11 @@
 
 ## 구성 개요
 
-이 프로젝트는 PostgreSQL Master-Slave 복제, HAProxy 로드밸런싱, Keepalived VIP 관리를 통한 완전한 고가용성 데이터베이스 클러스터를 제공합니다.
+이 프로젝트는 PostgreSQL Master-Slave 복제, HAProxy 로드밸런싱, Keepalived VIP 관리를 다루는 **로컬 학습용** 고가용성 데이터베이스 클러스터다.
+
+> ✅ **자동 Failover 검증 완료 (2026-06-03)**: `docker compose up` 한 번으로 노드가 repmgr 에 자동 등록되고 `repmgrd` 데몬이 상시 기동되어, Master 장애 시 Slave 가 자동 승격되고 HAProxy write 포트(3000)가 새 Primary 로 자동 전환된다. 변경 내역, 구조, 실측 로그는 [`AUTOMATIC-FAILOVER.md`](./AUTOMATIC-FAILOVER.md) 를 참고.
+>
+> ⚠️ Keepalived VIP(VRRP)는 로컬 Docker(bridge) 환경에서는 실효가 제한적이다. 호스트의 `localhost:3000` 접근은 VIP 가 아니라 HAProxy 컨테이너의 포트 매핑이며, write 고가용성은 HAProxy 의 HTTP 헬스체크로 달성한다.
 
 ### 아키텍처
 
@@ -35,12 +39,12 @@
 
 ### 서비스 구성
 
-- **postgres-master**: PostgreSQL 15 Master with repmgr (읽기/쓰기)
-- **postgres-slave**: PostgreSQL 15 Slave with repmgr (읽기 전용, 자동 failover 지원)
-- **haproxy**: HAProxy 2.8 로드밸런서 및 헬스체크
-- **keepalived-primary/backup**: Keepalived VIP 관리 및 자동 Failover
+- **postgres-master**: PostgreSQL 15 Master with repmgr (읽기/쓰기). 기동 시 `repmgr primary register` + `repmgrd` 자동 실행
+- **postgres-slave**: PostgreSQL 15 Slave with repmgr (읽기 전용). 기동 시 base backup + `repmgr standby register` + `repmgrd`(failover=automatic) 자동 실행
+- **haproxy**: HAProxy 2.8 로드밸런서. write 포트(3000)는 각 노드의 HTTP 헬스(:8008, primary 만 200)로 현재 Primary 를 판정
+- **keepalived-primary/backup**: Keepalived VIP 관리 (로컬 bridge 환경에서는 실효 제한적, 위 주의사항 참고)
 - **pgadmin**: PgAdmin4 웹 기반 관리 도구
-- **repmgr**: PostgreSQL 자동 failover 및 클러스터 관리
+- **repmgr / repmgrd**: 노드 등록, 상시 모니터링, Master 장애 시 Slave 자동 승격
 
 ### 네트워크 구성 및 포트
 
@@ -94,13 +98,17 @@ docker exec postgres-slave psql -U ramos -d ramos-test-db -c "
 "
 ```
 
-### 4. repmgr 클러스터 설정
+### 4. repmgr 클러스터 상태 확인
+> 노드 등록(`primary/standby register`)과 `repmgrd` 기동은 컨테이너 entrypoint 에서 **자동으로 수행**된다. `repmgr-setup.sh` 는 더 이상 필수가 아니며 강제 재등록(`--force`)용으로만 남겨둔다.
 ```bash
-# repmgr 클러스터 초기 설정
-chmod +x scripts/repmgr-setup.sh
-./scripts/repmgr-setup.sh
+# 자동 형성된 클러스터 상태 확인 (primary 1 + standby 1 이 보이면 정상)
+docker exec postgres-master su - postgres -c "repmgr -f /etc/repmgr.conf cluster show"
 
-# repmgr 클러스터 상태 확인
+# repmgrd 데몬 기동 확인 (master/slave 양쪽에 떠 있어야 자동 failover 가능)
+docker exec postgres-master pgrep -a repmgrd
+docker exec postgres-slave  pgrep -a repmgrd
+
+# 종합 상태 스크립트
 chmod +x scripts/repmgr-status.sh
 ./scripts/repmgr-status.sh
 ```
@@ -187,10 +195,10 @@ spring:
 ## repmgr 자동 Failover 시스템
 
 ### repmgr 특징
-- **자동 장애 감지**: Master 장애 시 자동으로 Slave를 Master로 승격
+- **자동 장애 감지**: `repmgrd` 데몬이 상시 모니터링하다 Master 장애 시 Slave 를 자동 승격
 - **클러스터 관리**: 노드 상태 모니터링 및 관리
-- **무중단 Failover**: 애플리케이션 연결 중단 최소화
-- **자동 복구**: 장애 복구 시 자동으로 클러스터에 재참여
+- **짧은 중단 후 전환**: 승격이 끝나기 전(실측 약 50~60초) write 는 일시 실패하며, 전환 완료 후 정상화된다(무중단 아님)
+- **구 Master 자동 재합류**: 복구된 옛 Master 는 재기동 시 `pg_rewind`(실패 시 base backup)로 새 Master 의 standby 로 자동 재참여한다(`master/entrypoint.sh`). 실측 약 12초에 attach
 
 ### repmgr 관리 명령어
 
@@ -237,14 +245,15 @@ App → VIP(172.20.0.100) → HAProxy → Master(postgres-master) [Primary]
 # 1. Master 서버 중단 시뮬레이션
 docker stop postgres-master
 
-# 2. repmgr 자동 반응 과정 (5-10초 내)
-# - repmgr가 Master 장애 감지
-# - Slave 노드가 자동으로 Master로 승격
-# - 새로운 Master가 쓰기 권한 획득
+# 2. repmgrd 자동 반응 과정 (실측 약 20초)
+# - repmgrd가 reconnect_attempts(4) x reconnect_interval(6s) 동안 재접속 시도 후 장애 확정
+# - Slave 노드가 자동으로 Master로 승격(promote) + repmgr 메타 갱신
+# - 복구된 구 Master는 재기동 시 pg_rewind로 새 Master의 standby로 자동 재합류
+# ※ 더 공격적인 값(3x5, monitor 2)은 promote 시점에 PostgreSQL을 불안정하게(crash 루프) 만들어 권장하지 않는다
 
-# 3. HAProxy 자동 재라우팅
-# - HAProxy가 승격된 노드 감지
-# - 트래픽이 새로운 Master로 전환
+# 3. HAProxy 자동 재라우팅 (HTTP 헬스 기반)
+# - 승격된 노드의 :8008 이 503(standby) -> 200(primary)으로 바뀜
+# - HAProxy write 백엔드가 새 Primary 만 UP 으로 인식해 트래픽 전환 (rise 1 x inter 2s)
 ```
 
 #### Failover 완료 상태
@@ -558,6 +567,8 @@ docker exec postgres-slave psql -U ramos -d ramos-test-db -c "
 ```
 
 #### 복제 슬롯 누락 문제 해결
+> 현재 `slave/entrypoint.sh` 는 `pg_basebackup -C -S slave_slot` 으로 백업 시 slot 을 **자동 생성**하므로 정상 흐름에서는 이 문제가 발생하지 않는다. 아래는 볼륨이 꼬여 slot 이 사라진 경우의 수동 복구 절차다.
+
 Slave에서 "replication slot does not exist" 오류가 발생하는 경우:
 
 ```bash

@@ -21,10 +21,13 @@ services:
       - ./docker/postgres/master/pg_hba.conf:/etc/postgresql/pg_hba.conf
       - ./docker/postgres/init-master.sql:/docker-entrypoint-initdb.d/01-init-master.sql
       - ./docker/postgres/repmgr-init-master.sh:/docker-entrypoint-initdb.d/99-repmgr-init.sh
-    command: |
-      postgres 
-      -c config_file=/etc/postgresql/postgresql.conf
-      -c hba_file=/etc/postgresql/pg_hba.conf
+      # 자동 등록/repmgrd/헬스서버 wrapper 및 공통 헬스 스크립트
+      - ./docker/postgres/master/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+      - ./docker/postgres/health-server.sh:/usr/local/bin/health-server.sh:ro
+      - ./docker/postgres/pg-health.sh:/usr/local/bin/pg-health.sh:ro
+      # repmgr.conf 는 마운트 (수정 시 rebuild 불필요)
+      - ./docker/postgres/master/repmgr.conf:/etc/repmgr.conf:ro
+    entrypoint: /usr/local/bin/entrypoint.sh
     networks:
       postgres_network:
         ipv4_address: 172.20.0.10
@@ -57,17 +60,13 @@ services:
       - ./docker/postgres/slave/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - ./docker/postgres/init-slave.sh:/docker-entrypoint-initdb.d/01-init-slave.sh:ro
       - ./docker/postgres/repmgr-init-slave.sh:/docker-entrypoint-initdb.d/99-repmgr-init.sh:ro
-    entrypoint: |
-      bash -c "
-      # Run the slave initialization script
-      chmod +x /docker-entrypoint-initdb.d/init-slave.sh
-      /docker-entrypoint-initdb.d/init-slave.sh
-      
-      # Start PostgreSQL with custom config
-      exec docker-entrypoint.sh postgres \
-        -c config_file=/etc/postgresql/postgresql.conf \
-        -c hba_file=/etc/postgresql/pg_hba.conf
-      "
+      # base backup + 자동 standby 등록/repmgrd(자동 failover)/헬스서버 wrapper 및 공통 헬스 스크립트
+      - ./docker/postgres/slave/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+      - ./docker/postgres/health-server.sh:/usr/local/bin/health-server.sh:ro
+      - ./docker/postgres/pg-health.sh:/usr/local/bin/pg-health.sh:ro
+      # repmgr.conf 는 마운트 (수정 시 rebuild 불필요)
+      - ./docker/postgres/slave/repmgr.conf:/etc/repmgr.conf:ro
+    entrypoint: /usr/local/bin/entrypoint.sh
     depends_on:
       postgres-master:
         condition: service_healthy
@@ -108,49 +107,10 @@ services:
       timeout: 5s
       retries: 3
 
-  # Keepalived for VIP management (Primary)
-  keepalived-primary:
-    image: osixia/keepalived:2.0.20
-    container_name: keepalived-primary
-    environment:
-      KEEPALIVED_INTERFACE: eth0
-      KEEPALIVED_VIRTUAL_IPS: 172.20.0.100
-      KEEPALIVED_UNICAST_PEERS: 172.20.0.21,172.20.0.22
-      KEEPALIVED_PRIORITY: 150
-      KEEPALIVED_ROUTER_ID: 51
-    volumes:
-      - ./docker/keepalived/primary/keepalived.conf:/etc/keepalived/keepalived.conf:ro
-      - ./docker/keepalived/check_haproxy.sh:/usr/local/bin/check_haproxy.sh:ro
-    depends_on:
-      - haproxy
-    networks:
-      postgres_network:
-        ipv4_address: 172.20.0.21
-    cap_add:
-      - NET_ADMIN
-    privileged: true
-
-  # Keepalived for VIP management (Backup)
-  keepalived-backup:
-    image: osixia/keepalived:2.0.20
-    container_name: keepalived-backup
-    environment:
-      KEEPALIVED_INTERFACE: eth0
-      KEEPALIVED_VIRTUAL_IPS: 172.20.0.100
-      KEEPALIVED_UNICAST_PEERS: 172.20.0.21,172.20.0.22
-      KEEPALIVED_PRIORITY: 100
-      KEEPALIVED_ROUTER_ID: 52
-    volumes:
-      - ./docker/keepalived/backup/keepalived.conf:/etc/keepalived/keepalived.conf:ro
-      - ./docker/keepalived/check_haproxy.sh:/usr/local/bin/check_haproxy.sh:ro
-    depends_on:
-      - haproxy
-    networks:
-      postgres_network:
-        ipv4_address: 172.20.0.22
-    cap_add:
-      - NET_ADMIN
-    privileged: true
+  # NOTE: keepalived VIP 이중화(haproxy-backup + keepalived x2)는 로컬 Docker Desktop 환경에서
+  # osixia/keepalived + LinuxKit VM + VRRP 비호환으로 VIP 를 잡지 못하고 오히려 PostgreSQL 복제를
+  # 교란해 crash 루프를 유발하는 것이 검증되어 제거했다. write 고가용성은 HAProxy 의 HTTP 헬스체크
+  # (option httpchk, :8008 primary 판정)로 달성한다. 자세한 내용은 AUTOMATIC-FAILOVER.md 참고.
 
   # PostgreSQL Monitoring and Management
   pgadmin:
